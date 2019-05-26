@@ -2,6 +2,7 @@ from . import git, pijul
 import asyncio
 import hashlib
 import os
+import shlex
 
 
 async def run(cmd):
@@ -154,6 +155,9 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
     date = await cmd(f"cd {git}; git log -1 -s --format=%ci {commit}")
     desc = f"Imported from Git commit {commit}"
     message = (await cmd(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")[0]
+
+    author = shlex.quote(author)
+    message = shlex.quote(message)
     await cmd(f"cd {pijul}; pijul record --add-new-files --all --author '{author}' --branch {branch} --date '{date}' --description '{desc}' --message '{message}'")
 
     print(chalk.green("  Done."))
