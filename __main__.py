@@ -36,7 +36,6 @@ async def main():
 
 
     print(chalk.yellow(chalk.bold("Welcome to PijulGit proxy!")))
-    await sync(config)
 
     # Set up configuration file if required
     if config is None:
@@ -131,6 +130,9 @@ async def main():
     if "login" not in config["pijul"]:
         await asyncio.create_task(pijulPool())        
         print(chalk.green("Started Pijul pooling thread"))
+
+    print("Initial sync...")
+    await sync(config)
 
     # Start server
     await server.start(onBind, config)
