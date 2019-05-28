@@ -5,8 +5,10 @@ import os
 import shlex
 import chalk
 import merge3
+import datetime
 
 handled_git_commits = []
+handled_pijul_patches = []
 
 
 async def run(cmd):
@@ -65,11 +67,17 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
         if len(patch_id) == 88:  # this is to avoid repository id to be treated as a patch
             desc = await run(f"cd {pijul}; pijul patch --description {patch_id}")
             if desc.strip() == f"Imported from Git commit {commit}":
-                # Yay, imported already
+                # Yay, exported to Pijul already
                 return
     if commit in handled_git_commits:
-        # Imported already
+        # Exported to Pijul already
         return
+
+    # Check whether this is an imported commit
+    message_lines = (await run(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")
+    if any((line.startswith("Imported from Pijul patch ") for line in message_lines)):
+        return
+
     # Not imported, make sure all its parents are imported first
     r = await run(f"cd {git}; git show -s --pretty=%P {commit}")
     parents = []
@@ -82,7 +90,7 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
     date = (await run(f"cd {git}; git log -1 -s --format=%ci {commit}")).strip()
     date = "T".join(date.split(" ", 1))
     desc = f"Imported from Git commit {commit}"
-    message = (await run(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")[0]
+    message = message_lines[0]
 
     print(f"  Syncing commit {commit}: {message}")
 
@@ -183,7 +191,115 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
     print(chalk.green(f"  Done. Recorded patch {patch}"))
 
 
+async def syncPijulToGit(git, pijul):
+    print("  Syncing Pijul -> Git...")
+    for r in (await run(f"cd {pijul}; pijul branches")).split("\n"):
+        if r == "":
+            continue
+
+        branch_name = r[2:]
+
+        r = (await run(f"cd {pijul}; pijul log --branch {branch_name}")).split("\n")
+
+        i = 0
+        patches = []
+        while i < len(r):
+            if r[i] == "":
+                i += 1
+                continue
+
+            # Hash
+            patch_id = r[i].split(" ")[1].strip()
+            i += 1
+            # Internal id
+            i += 1
+            # Authors
+            authors = r[i].split(" ", 1)[1].strip()
+            i += 1
+            # Timestamp
+            timestamp = r[i].split(" ", 1)[1].strip()
+            if "." in timestamp:
+                timestamp = (
+                    timestamp.split(".")[0] +  # 2019-05-26 14:52:37
+                    "." +  # .
+                    timestamp.split(".")[1][:6] +  # 697693
+                    " " +  # space
+                    timestamp.split(".")[1].split(" ", 1)[1]  # UTC
+                )
+            i += 1
+            # Empty line
+            i += 1
+            # Message and description
+            message = ""
+            while i < len(r) and not r[i].startswith("\x1B[1mHash"):
+                message += r[i][4:] + "\n"
+                i += 1
+
+            # Check whether this patch was actually imported from Git
+            if any((line.startswith("Imported from Git commit ") for line in message.split("\n"))):
+                continue
+            # Check whether this patch has been exported to Git already
+            if patch_id in handled_pijul_patches:
+                continue
+            rr = await run(f"cd {git}; git log --all --grep='Imported from Pijul patch {patch_id}' --format='%H'")
+            exported = False
+            for commit in rr.strip().split("\n"):
+                if commit == "":
+                    continue
+                # Get commit message
+                git_message = await run(f"cd {git}; git log -1 --format='%B' {commit}")
+                if any((line == f"Imported from Pijul patch {patch_id}" for line in git_message.split("\n"))):
+                    exported = True
+                    continue
+            if exported:
+                continue
+
+            # Ok, a completely new patch
+            patches.append({
+                "patch_id": patch_id,
+                "author": authors,
+                "timestamp": datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f %Z"),
+                "message": message.strip()
+            })
+
+        patches.sort(key=lambda patch: patch["timestamp"])
+
+        print("  Temporary reverting all new patches...")
+        for patch in patches:
+            patch_id = patch["patch_id"]
+            r = await run(f"cd {pijul}; pijul rollback --author 'Rollback' --message 'Rollback' {patch_id} --branch {branch_name}")
+            patch["rollback_patch_id"] = r.strip().replace("Recorded patch ", "")
+
+        await run(f"cd {git}; git checkout {branch_name}")
+        for patch in patches:
+            await syncPijulToGitPatch(branch_name, git, pijul, **patch)
+
+async def syncPijulToGitPatch(branch, git, pijul, patch_id, rollback_patch_id, author, timestamp, message):
+    print(f"  Syncing patch {patch_id}: {message}")
+
+    # Record the patch (by unrecording rollback patches, arr!..)
+    await run(f"cd {pijul}; pijul unrecord {rollback_patch_id} --branch {branch}")
+    await run(f"cd {pijul}; pijul revert --all --branch {branch}")
+
+    # Synchronize
+    await run(f"rsync -rv -f'- .git/' -f'- .pijul/' {pijul}/ {git}/")
+
+    # Commit
+    if (await run(f"cd {git}; git status --short")).strip() == "":
+        print(chalk.yellow("  No changes (fast-forward)."))
+        handled_pijul_patches.append(patch_id)
+        return
+
+    author = shlex.quote(author)
+    message = shlex.quote(f"{message}\n\nImported from Pijul patch {patch_id}")
+    date = str(timestamp)
+    await run(f"cd {git}; git add --all; git commit --author={author} --date='{date}' --message={message} --no-edit")
+    commit = (await run(f"cd {git}; git rev-parse HEAD")).strip()
+    print(chalk.green(f"  Done. Committed {commit}"))
+
 async def sync(config):
     await pullGit(config["git"]["url"])
     await pullPijul(config["pijul"]["url"])
     await syncGitToPijul(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]))
+    await syncPijulToGit(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]))
+    print(chalk.green(chalk.bold("  Sync complete!")))
