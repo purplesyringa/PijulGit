@@ -61,6 +61,8 @@ async def start(onBind, c):
     cur_ip = await get("https://api.ipify.org")
     await onBind(f"{cur_ip}:{port}")
 
+    print(chalk.green(chalk.bold("  Initialization finished!")))
+
     # Listen for IP changes
     while True:
         await asyncio.sleep(5)
