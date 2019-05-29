@@ -49,17 +49,19 @@ async def pullPijul(url):
         print(chalk.green("  Done."))
 
 
-async def syncGitToPijul(git, pijul):
-    print("  Syncing Git -> Pijul...")
+async def presyncGitToPijul(git, pijul):
+    print("  Collecting new Git commits...")
+    commits = []
     for r in (await run(f"cd {git}; git for-each-ref --format '%(refname) %(objectname)'")).split("\n"):
         if r == "":
             continue
         ref, commit = r.split(" ")
         if ref.startswith("refs/heads/"):
-            branch_name = ref.split("/", 2)[2]
-            await syncGitToPijulCommit(git, pijul, commit, branch_name)
+            branch = ref.split("/", 2)[2]
+            commits += [(commit, branch) for commit in await presyncGitToPijulCommit(git, pijul, commit)]
+    return commits
 
-async def syncGitToPijulCommit(git, pijul, commit, branch):
+async def presyncGitToPijulCommit(git, pijul, commit):
     # Check whether Pijul repo has this commit imported already
     r = await run(f"cd {pijul}; pijul log --grep 'Imported from Git commit {commit}' --hash-only")
     for patch_id in r.split("\n"):
@@ -80,17 +82,39 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
 
     # Not imported, make sure all its parents are imported first
     r = await run(f"cd {git}; git show -s --pretty=%P {commit}")
-    parents = []
+    commits = []
     for parent in r.split():
         if parent != "":
-            parents.append(await syncGitToPijulCommit(git, pijul, parent, branch))
+            commits += await presyncGitToPijulCommit(git, pijul, parent)
+    return commits + [commit]
+
+
+async def syncGitToPijul(git, pijul, presync):
+    for commit, branch in presync:
+        await syncGitToPijulCommit(git, pijul, commit, branch)
+
+async def syncGitToPijulCommit(git, pijul, commit, branch):
+    # Check whether Pijul repo has this commit imported already
+    # Notice that this duplicates code from presyncGitToPijulCommit, however,
+    # this additional check will stop the commits from being duplicated.
+    r = await run(f"cd {pijul}; pijul log --grep 'Imported from Git commit {commit}' --hash-only --branch {branch}")
+    for patch_id in r.split("\n"):
+        patch_id = patch_id.split(":")[0]
+        if len(patch_id) == 88:  # this is to avoid repository id to be treated as a patch
+            desc = await run(f"cd {pijul}; pijul patch --description {patch_id}")
+            if desc.strip() == f"Imported from Git commit {commit}":
+                # Yay, exported to Pijul already
+                return
+    if commit in handled_git_commits:
+        # Exported to Pijul already
+        return
 
     # Sync the commit itself now
     author = (await run(f"cd {git}; git --no-pager show -s --format='%an <%ae>' {commit}")).strip()
     date = (await run(f"cd {git}; git log -1 -s --format=%ci {commit}")).strip()
     date = "T".join(date.split(" ", 1))
     desc = f"Imported from Git commit {commit}"
-    message = message_lines[0]
+    message = (await run(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")[0]
 
     print(f"  Syncing commit {commit}: {message}")
 
@@ -289,26 +313,25 @@ async def syncPijulToGit(git, pijul):
         actions.sort(key=lambda action: action["timestamp"])
 
         print("  Temporary reverting all changes...")
-        for action in actions:
+        for action in actions[::-1]:
             patch_id = action["patch_id"]
             if action["action"] == "add":
-                r = await run(f"cd {pijul}; pijul rollback --author 'Rollback' --message 'Rollback' {patch_id} --branch {branch_name}")
-                action["rollback_patch_id"] = r.strip().replace("Recorded patch ", "")
+                await run(f"cd {pijul}; pijul unrecord {patch_id} --branch {branch_name}")
             elif action["action"] == "remove":
                 await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch_name}; pijul revert --all --branch {branch_name}")
 
         for action in actions:
             await syncPijulToGitPatch(branch_name, git, pijul, **action)
 
-async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, timestamp, message, rollback_patch_id=None):
+async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, timestamp, message):
+    small_patch_id = patch_id[:10] + "..."
     if action == "add":
-        print(f"  Syncing new patch {patch_id}: {message}")
+        print(f"  Syncing new patch {small_patch_id}: {message}")
+        await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch}")
     elif action == "remove":
-        print(f"  Reverting patch {patch_id}: {message}")
-        rollback_patch_id = patch_id
+        print(f"  Reverting patch {small_patch_id}: {message}")
+        await run(f"cd {pijul}; pijul unrecord {patch_id} --branch {branch}")
 
-    # Record the patch (by unrecording rollback patches, arr!..)
-    await run(f"cd {pijul}; pijul unrecord {rollback_patch_id} --branch {branch}")
     await run(f"cd {pijul}; pijul revert --all --branch {branch}")
 
     # Synchronize
@@ -336,6 +359,7 @@ async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, time
 async def sync(config):
     await pullGit(config["git"]["url"])
     await pullPijul(config["pijul"]["url"])
-    await syncGitToPijul(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]))
+    presync = await presyncGitToPijul(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]))
     await syncPijulToGit(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]))
+    await syncGitToPijul(urlToPath(config["git"]["url"]), urlToPath(config["pijul"]["url"]), presync)
     print(chalk.green(chalk.bold("  Sync complete!")))
