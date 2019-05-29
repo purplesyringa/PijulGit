@@ -28,11 +28,11 @@ async def pullGit(url):
     # Check whether we have the repo downloaded already
     path = urlToPath(url)
     if os.path.isdir(path):
-        print("  Git: Fetching", url, "to", path)
+        print(f"  Git: Fetching {url} to {path}...")
         await run(f"cd {path}; git fetch")
         print(chalk.green("  Done."))
     else:
-        print("  Git: Cloning", url, "to", path)
+        print(f"  Git: Cloning {url} to {path}...")
         await run(f"cd /tmp; git clone \"{url}\" {path}")
         print(chalk.green("  Done."))
 
@@ -40,11 +40,11 @@ async def pullPijul(url):
     # Check whether we have the repo downloaded already
     path = urlToPath(url)
     if os.path.isdir(path):
-        print("  Pijul: Fetching", url, "to", path)
+        print(f"  Pijul: Fetching {url} to {path}...")
         await run(f"cd {path}; pijul pull --all")
         print(chalk.green("  Done."))
     else:
-        print("  Pijul: Cloning", url, "to", path)
+        print(f"  Pijul: Cloning {url} to {path}...")
         await run(f"mkdir {path}; cd {path}; pijul init; pijul pull --set-default --set-remote origin \"{url}\" --all")
         print(chalk.green("  Done."))
 
@@ -128,7 +128,7 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
             desc = await run(f"cd {pijul}; pijul patch --description {patch_id}")
             if desc.strip() == f"Imported from Git commit {commit}":
                 # Okay, the patch is on another branch. So we apply it
-                print(f"  Syncing commit {commit}: {message}")
+                print(f"  Syncing commit {commit}: {message}...")
                 await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch}")
                 print(chalk.green(f"  Done. Reapplied patch {patch_id}"))
                 return
@@ -140,7 +140,7 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
     desc = f"Imported from Git commit {commit}"
     message = (await run(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")[0]
 
-    print(f"  Syncing commit {commit}: {message}")
+    print(f"  Syncing commit {commit}: {message}...")
 
     await run(f"cd {pijul}; pijul checkout {branch}")
 
@@ -226,7 +226,7 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
 
     # Check whether there are any changes
     if await run(f"cd {pijul}; pijul status --short") == "":
-        print(chalk.yellow("  No changes (fast-forward)."))
+        print(chalk.yellow("  No changes (fast-forward)"))
         handled_git_commits.append((commit, branch))
         return
 
@@ -363,7 +363,7 @@ async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, time
 
     # Commit
     if (await run(f"cd {git}; git status --short")).strip() == "":
-        print(chalk.yellow("  No changes (fast-forward)."))
+        print(chalk.yellow("  No changes (fast-forward)"))
         handled_pijul_patches.append((patch_id, branch))
         return
 
