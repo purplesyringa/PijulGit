@@ -245,8 +245,8 @@ async def syncPijulToGit(git, pijul):
         if r == "":
             continue
 
-        branch_name = r[2:]
-        await run(f"cd {git}; git checkout {branch_name}")
+        branch = r[2:]
+        await run(f"cd {git}; git checkout {branch}")
 
 
         # List patches that were exported to Git already
@@ -261,13 +261,13 @@ async def syncPijulToGit(git, pijul):
                         break
                 else:
                     continue
-                if (commit, branch_name) not in handled_git_commits:
+                if (commit, branch) not in handled_git_commits:
                     exported[patch_id] = commit
-        for (patch_id, branch_name) in handled_pijul_patches:
+        for (patch_id, branch) in handled_pijul_patches:
             exported[patch_id] = None
 
         # List Pijul patches
-        r = (await run(f"cd {pijul}; pijul log --branch {branch_name}")).split("\n")
+        r = (await run(f"cd {pijul}; pijul log --branch {branch}")).split("\n")
 
         i = 0
         pijul_patches = {}
@@ -340,12 +340,12 @@ async def syncPijulToGit(git, pijul):
         for action in actions[::-1]:
             patch_id = action["patch_id"]
             if action["action"] == "add":
-                await run(f"cd {pijul}; pijul unrecord {patch_id} --branch {branch_name}")
+                await run(f"cd {pijul}; pijul unrecord {patch_id} --branch {branch}")
             elif action["action"] == "remove":
-                await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch_name}; pijul revert --all --branch {branch_name}")
+                await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch}; pijul revert --all --branch {branch}")
 
         for action in actions:
-            await syncPijulToGitPatch(branch_name, git, pijul, **action)
+            await syncPijulToGitPatch(branch, git, pijul, **action)
 
 async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, timestamp, message):
     small_patch_id = patch_id[:10] + "..."
