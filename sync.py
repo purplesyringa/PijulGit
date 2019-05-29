@@ -263,7 +263,7 @@ async def syncPijulToGit(git, pijul):
                     continue
                 if (commit, branch_name) not in handled_git_commits:
                     exported[patch_id] = commit
-        for patch_id in handled_pijul_patches:
+        for (patch_id, branch_name) in handled_pijul_patches:
             exported[patch_id] = None
 
         # List Pijul patches
@@ -364,7 +364,7 @@ async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, time
     # Commit
     if (await run(f"cd {git}; git status --short")).strip() == "":
         print(chalk.yellow("  No changes (fast-forward)."))
-        handled_pijul_patches.append(patch_id)
+        handled_pijul_patches.append((patch_id, branch))
         return
 
     if action == "add":
