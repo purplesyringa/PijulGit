@@ -58,34 +58,34 @@ async def presyncGitToPijul(git, pijul):
         ref, commit = r.split(" ")
         if ref.startswith("refs/heads/"):
             branch = ref.split("/", 2)[2]
-            commits += [(commit, branch) for commit in await presyncGitToPijulCommit(git, pijul, commit)]
+            commits += [(commit, branch) for commit in await presyncGitToPijulCommit(git, pijul, commit, branch)]
     return commits
 
-async def presyncGitToPijulCommit(git, pijul, commit):
+async def presyncGitToPijulCommit(git, pijul, commit, branch):
     # Check whether Pijul repo has this commit imported already
-    r = await run(f"cd {pijul}; pijul log --grep 'Imported from Git commit {commit}' --hash-only")
+    r = await run(f"cd {pijul}; pijul log --grep 'Imported from Git commit {commit}' --hash-only --branch {branch}")
     for patch_id in r.split("\n"):
         patch_id = patch_id.split(":")[0]
         if len(patch_id) == 88:  # this is to avoid repository id to be treated as a patch
             desc = await run(f"cd {pijul}; pijul patch --description {patch_id}")
             if desc.strip() == f"Imported from Git commit {commit}":
                 # Yay, exported to Pijul already
-                return
-    if commit in handled_git_commits:
+                return []
+    if (commit, branch) in handled_git_commits:
         # Exported to Pijul already
-        return
+        return []
 
     # Check whether this is an imported commit
     message_lines = (await run(f"cd {git}; git log -1 --format=%B {commit}")).split("\n")
     if any((line.startswith("Imported from Pijul patch ") for line in message_lines)):
-        return
+        return []
 
     # Not imported, make sure all its parents are imported first
     r = await run(f"cd {git}; git show -s --pretty=%P {commit}")
     commits = []
     for parent in r.split():
         if parent != "":
-            commits += await presyncGitToPijulCommit(git, pijul, parent)
+            commits += await presyncGitToPijulCommit(git, pijul, parent, branch)
     return commits + [commit]
 
 
@@ -105,9 +105,33 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
             if desc.strip() == f"Imported from Git commit {commit}":
                 # Yay, exported to Pijul already
                 return
-    if commit in handled_git_commits:
+    if (commit, branch) in handled_git_commits:
         # Exported to Pijul already
         return
+
+    # Check whether we've already imported the commit as a patch, and we can
+    # reuse it. For example, look at the following tree:
+    #
+    # D <- hotfix-123
+    # |
+    # C
+    # |
+    # B <- master
+    # |
+    # A
+    #
+    # In this case, we don't want to import A and B twice.
+    r = await run(f"cd {pijul}; pijul log --grep 'Imported from Git commit {commit}' --hash-only")
+    for patch_id in r.split("\n"):
+        patch_id = patch_id.split(":")[0]
+        if len(patch_id) == 88:  # this is to avoid repository id to be treated as a patch
+            desc = await run(f"cd {pijul}; pijul patch --description {patch_id}")
+            if desc.strip() == f"Imported from Git commit {commit}":
+                # Okay, the patch is on another branch. So we apply it
+                print(f"  Syncing commit {commit}: {message}")
+                await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch}")
+                print(chalk.green(f"  Done. Reapplied patch {patch_id}"))
+                return
 
     # Sync the commit itself now
     author = (await run(f"cd {git}; git --no-pager show -s --format='%an <%ae>' {commit}")).strip()
@@ -203,7 +227,7 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
     # Check whether there are any changes
     if await run(f"cd {pijul}; pijul status --short") == "":
         print(chalk.yellow("  No changes (fast-forward)."))
-        handled_git_commits.append(commit)
+        handled_git_commits.append((commit, branch))
         return
 
     # Record changes
@@ -237,7 +261,7 @@ async def syncPijulToGit(git, pijul):
                         break
                 else:
                     continue
-                if commit not in handled_git_commits:
+                if (commit, branch_name) not in handled_git_commits:
                     exported[patch_id] = commit
         for patch_id in handled_pijul_patches:
             exported[patch_id] = None
