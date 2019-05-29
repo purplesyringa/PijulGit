@@ -198,11 +198,31 @@ async def syncPijulToGit(git, pijul):
             continue
 
         branch_name = r[2:]
+        await run(f"cd {git}; git checkout {branch_name}")
 
+
+        # List patches that were exported to Git already
+        r = await run(f"cd {git}; git log --grep='Imported from Pijul patch' --format='[Commit Boundary]%H %B'")
+        exported = {}
+        for part in r.split("[Commit Boundary]"):
+            if part != "":
+                commit, message = part.strip().split(" ", 1)
+                for row in message.split("\n"):
+                    if row.startswith("Imported from Pijul patch "):
+                        patch_id = row.split()[-1]
+                        break
+                else:
+                    continue
+                if commit not in handled_git_commits:
+                    exported[patch_id] = commit
+        for patch_id in handled_pijul_patches:
+            exported[patch_id] = None
+
+        # List Pijul patches
         r = (await run(f"cd {pijul}; pijul log --branch {branch_name}")).split("\n")
 
         i = 0
-        patches = []
+        pijul_patches = {}
         while i < len(r):
             if r[i] == "":
                 i += 1
@@ -238,44 +258,54 @@ async def syncPijulToGit(git, pijul):
             # Check whether this patch was actually imported from Git
             if any((line.startswith("Imported from Git commit ") for line in message.split("\n"))):
                 continue
-            # Check whether this patch has been exported to Git already
-            if patch_id in handled_pijul_patches:
-                continue
-            rr = await run(f"cd {git}; git log --all --grep='Imported from Pijul patch {patch_id}' --format='%H'")
-            exported = False
-            for commit in rr.strip().split("\n"):
-                if commit == "":
-                    continue
-                # Get commit message
-                git_message = await run(f"cd {git}; git log -1 --format='%B' {commit}")
-                if any((line == f"Imported from Pijul patch {patch_id}" for line in git_message.split("\n"))):
-                    exported = True
-                    continue
-            if exported:
-                continue
 
-            # Ok, a completely new patch
-            patches.append({
-                "patch_id": patch_id,
+            pijul_patches[patch_id] = {
                 "author": authors,
-                "timestamp": datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f %Z"),
+                "timestamp": timestamp,
                 "message": message.strip()
-            })
+            }
 
-        patches.sort(key=lambda patch: patch["timestamp"])
 
-        print("  Temporary reverting all new patches...")
-        for patch in patches:
-            patch_id = patch["patch_id"]
-            r = await run(f"cd {pijul}; pijul rollback --author 'Rollback' --message 'Rollback' {patch_id} --branch {branch_name}")
-            patch["rollback_patch_id"] = r.strip().replace("Recorded patch ", "")
+        # Generate pijul_patches->exported diff
+        actions = []
+        for patch_id, data in pijul_patches.items():
+            if patch_id not in exported:
+                # New patch
+                actions.append({
+                    "action": "add",
+                    "patch_id": patch_id,
+                    **data
+                })
+        for patch_id, commit in exported.items():
+            if patch_id not in pijul_patches:
+                # Revert patch
+                actions.append({
+                    "action": "remove",
+                    "patch_id": patch_id,
+                    **data
+                })
 
-        await run(f"cd {git}; git checkout {branch_name}")
-        for patch in patches:
-            await syncPijulToGitPatch(branch_name, git, pijul, **patch)
+        # Sort actions somehow
+        actions.sort(key=lambda action: action["timestamp"])
 
-async def syncPijulToGitPatch(branch, git, pijul, patch_id, rollback_patch_id, author, timestamp, message):
-    print(f"  Syncing patch {patch_id}: {message}")
+        print("  Temporary reverting all changes...")
+        for action in actions:
+            patch_id = action["patch_id"]
+            if action["action"] == "add":
+                r = await run(f"cd {pijul}; pijul rollback --author 'Rollback' --message 'Rollback' {patch_id} --branch {branch_name}")
+                action["rollback_patch_id"] = r.strip().replace("Recorded patch ", "")
+            elif action["action"] == "remove":
+                await run(f"cd {pijul}; pijul apply {patch_id} --branch {branch_name}; pijul revert --all --branch {branch_name}")
+
+        for action in actions:
+            await syncPijulToGitPatch(branch_name, git, pijul, **action)
+
+async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, timestamp, message, rollback_patch_id=None):
+    if action == "add":
+        print(f"  Syncing new patch {patch_id}: {message}")
+    elif action == "remove":
+        print(f"  Reverting patch {patch_id}: {message}")
+        rollback_patch_id = patch_id
 
     # Record the patch (by unrecording rollback patches, arr!..)
     await run(f"cd {pijul}; pijul unrecord {rollback_patch_id} --branch {branch}")
@@ -290,12 +320,18 @@ async def syncPijulToGitPatch(branch, git, pijul, patch_id, rollback_patch_id, a
         handled_pijul_patches.append(patch_id)
         return
 
+    if action == "add":
+        message = shlex.quote(f"{message}\n\nImported from Pijul patch {patch_id}")
+    elif action == "remove":
+        message = shlex.quote(f"{message}\n\nReverted Pijul patch {patch_id}")
+
     author = shlex.quote(author)
-    message = shlex.quote(f"{message}\n\nImported from Pijul patch {patch_id}")
     date = str(timestamp)
     await run(f"cd {git}; git add --all; git commit --author={author} --date='{date}' --message={message} --no-edit")
     commit = (await run(f"cd {git}; git rev-parse HEAD")).strip()
     print(chalk.green(f"  Done. Committed {commit}"))
+
+
 
 async def sync(config):
     await pullGit(config["git"]["url"])
