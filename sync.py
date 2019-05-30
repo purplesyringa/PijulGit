@@ -92,6 +92,9 @@ async def syncGitToPijul(git, pijul, presync):
     print("  Syncing Git -> Pijul...")
     for commit, branch in presync:
         await syncGitToPijulCommit(git, pijul, commit, branch)
+    if presync != []:
+        print("  Pushing...")
+        await run(f"cd {pijul}; pijul push --all")
 
 async def syncGitToPijulCommit(git, pijul, commit, branch):
     # Check whether Pijul repo has this commit imported already
@@ -344,6 +347,10 @@ async def syncPijulToGit(git, pijul):
 
         for action in actions:
             await syncPijulToGitPatch(branch, git, pijul, **action)
+
+        if actions != []:
+            print("  Pushing...")
+            await run(f"cd {git}; git push")
 
 async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, timestamp, message):
     small_patch_id = patch_id[:10] + "..."
