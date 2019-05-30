@@ -16,7 +16,11 @@ async def run(cmd):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL
     )
-    stdout, _ = await proc.communicate()
+    try:
+        stdout, _ = await proc.communicate()
+    except asyncio.CancelledError:
+        proc.terminate()
+        return ""
     return stdout.decode()
 
 
@@ -29,6 +33,12 @@ async def pullGit(url):
     if os.path.isdir(path):
         print(f"  Git: Fetching {url} to {path}...")
         await run(f"cd {path}; git fetch")
+        for r in (await run(f"cd {path}; git branch -r")).split("\n"):
+            r = r[2:]
+            if r.startswith("origin/"):
+                branch = r.split("/", 1)[1]
+                if not branch.startswith("HEAD -> "):
+                    await run(f"cd {path}; git checkout {branch}")
         print(chalk.green("  Done."))
     else:
         print(f"  Git: Cloning {url} to {path}...")
