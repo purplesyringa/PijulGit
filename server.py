@@ -80,6 +80,8 @@ async def fromGitlab(req):
     if r["project"]["path_with_namespace"] == git.getUrlRepository(config["git"]["url"]):
         # This check isn't for security -- it's to avoid accidental calls
         await sync(config)
+        return web.Response(text="ok")
+    return web.Response(text="Error: Wrong repository")
 
 async def fromNest(req):
     r = json.loads(await req.read())
@@ -90,3 +92,6 @@ async def fromNest(req):
         if f"{repo_owner}/{repo_name}" == pijul.getUrlRepository(config["pijul"]["url"]):
             # This check isn't for security -- it's to avoid accidental calls
             await sync(config)
+            return web.Response(text="ok")
+        return web.Response(text="Error: Wrong repository")
+    return web.Response(text="Error: No new patches")
