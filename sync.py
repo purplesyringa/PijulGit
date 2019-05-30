@@ -8,7 +8,6 @@ import merge3
 import datetime
 
 handled_git_commits = []
-handled_pijul_patches = []
 
 
 async def run(cmd):
@@ -90,6 +89,7 @@ async def presyncGitToPijulCommit(git, pijul, commit, branch):
 
 
 async def syncGitToPijul(git, pijul, presync):
+    print("  Syncing Git -> Pijul...")
     for commit, branch in presync:
         await syncGitToPijulCommit(git, pijul, commit, branch)
 
@@ -263,8 +263,6 @@ async def syncPijulToGit(git, pijul):
                     continue
                 if (commit, branch) not in handled_git_commits:
                     exported[patch_id] = commit
-        for (patch_id, branch) in handled_pijul_patches:
-            exported[patch_id] = None
 
         # List Pijul patches
         r = (await run(f"cd {pijul}; pijul log --branch {branch}")).split("\n")
@@ -362,21 +360,21 @@ async def syncPijulToGitPatch(branch, git, pijul, action, patch_id, author, time
     await run(f"rsync -rv -f'- .git/' -f'- .pijul/' {pijul}/ {git}/")
 
     # Commit
-    if (await run(f"cd {git}; git status --short")).strip() == "":
-        print(chalk.yellow("  No changes (fast-forward)"))
-        handled_pijul_patches.append((patch_id, branch))
-        return
+    is_empty = (await run(f"cd {git}; git status --short")).strip() == ""
 
     if action == "add":
         message = shlex.quote(f"{message}\n\nImported from Pijul patch {patch_id}")
     elif action == "remove":
         message = shlex.quote(f"{message}\n\nReverted Pijul patch {patch_id}")
-
     author = shlex.quote(author)
     date = str(timestamp)
-    await run(f"cd {git}; git add --all; git commit --author={author} --date='{date}' --message={message} --no-edit")
+    await run(f"cd {git}; git add --all; git commit --author={author} --date='{date}' --message={message} --no-edit --allow-empty")
     commit = (await run(f"cd {git}; git rev-parse HEAD")).strip()
-    print(chalk.green(f"  Done. Committed {commit}"))
+
+    if is_empty:
+        print(chalk.yellow(f"  No changes (fast-forward), committed {commit}"))
+    else:
+        print(chalk.green(f"  Done. Committed {commit}"))
 
 
 
