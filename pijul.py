@@ -20,7 +20,10 @@ def getUrlRepository(url):
     if url.startswith("https://"):
         return url[len("https://"):].split("/", 1)[1]
     elif "://" not in url:
-        return url.split(":", 1)[1]
+        repo = url.split(":", 1)[1]
+        if "/" not in repo:
+            repo = url.split("@")[0] + "/" + repo
+        return repo
     else:
         # Should never get here
         raise NotImplementedError()
