@@ -208,6 +208,14 @@ async def syncGitToPijulCommit(git, pijul, commit, branch):
         elif base is not None and ours is None:
             # Deleted by us
             continue
+        elif base == ours:
+            with open(f"{pijul}/{file}", "w") as f:
+                f.write("".join(theirs))
+            continue
+        elif base == theirs:
+            with open(f"{pijul}/{file}", "w") as f:
+                f.write("".join(ours))
+            continue
 
         # Assume file modifications on Git side or both sides
         merge = merge3.Merge3(base, ours, theirs, is_cherrypick=True)
